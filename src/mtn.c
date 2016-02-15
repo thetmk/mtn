@@ -224,7 +224,7 @@ int gb_current_depth = 0;
 
 /* more global variables */
 char *gb_argv0 = NULL;
-char *gb_version = "200808a copyright (c) 2007-2008 tuit, et al.";
+char *gb_version = "20160215 copyright (c) 2007-2008 tuit, et al.";
 time_t gb_st_start = 0; // start time of program
 
 /* misc functions */
