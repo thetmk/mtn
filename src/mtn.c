@@ -175,10 +175,14 @@ rgb_color gb_k_bcolor = GB_K_BCOLOR; // background color
 int gb_L_info_location = GB_L_INFO_LOCATION;
 #define GB_L_TIME_LOCATION 1
 int gb_L_time_location = GB_L_TIME_LOCATION;
+#define GB_M_BRIEF_MEDIA_INFO 0;
+int gb_m_brief_media_info = GB_M_BRIEF_MEDIA_INFO;
 #define GB_N_NORMAL 0
 int gb_n_normal = GB_N_NORMAL; // normal priority; 1 normal; 0 lower
 #define GB_N_SUFFIX NULL
 char *gb_N_suffix = GB_N_SUFFIX; // info text file suffix
+#define GB_FILENAME_USE_FULL 0
+int gb_filename_use_full = GB_FILENAME_USE_FULL; // use full input filename (include extension)
 #define GB_O_SUFFIX "_s.jpg"
 char *gb_o_suffix = GB_O_SUFFIX;
 #define GB_O_OUTDIR NULL
@@ -197,6 +201,8 @@ int gb_q_quiet = GB_Q_QUIET; // 1 on; 0 off
 int gb_r_row = GB_R_ROW; // 0 = as many rows as needed
 #define GB_S_STEP 120
 int gb_s_step = GB_S_STEP; // less than 0 = every frame; 0 = step evenly to get column x row
+#define GB_S_SELECT_VIDEO_STREAM 0
+int gb_S_select_video_stream = GB_S_SELECT_VIDEO_STREAM;
 #define GB_T_TIME 1
 int gb_t_timestamp = GB_T_TIME; // 1 on; 0 off
 #define GB_T_TEXT NULL
@@ -212,6 +218,9 @@ int gb_W_overwrite = GB_W_OVERWRITE; // 1 = overwrite; 0 = dont overwrite
 int gb_z_seek = GB_Z_SEEK; // always use seek mode; 1 on; 0 off
 #define GB_Z_NONSEEK 0
 int gb_Z_nonseek = GB_Z_NONSEEK; // always use non-seek mode; 1 on; 0 off
+#define GB_D_DEPTH 0
+int gb_d_depth = GB_D_DEPTH; // 0 is unlimited directory recursion depth
+int gb_current_depth = 0;
 
 /* more global variables */
 char *gb_argv0 = NULL;
@@ -809,7 +818,7 @@ void save_AVFrame(AVFrame *pFrame, int src_width, int src_height, int pix_fmt,
     struct SwsContext *pSwsCtx = NULL;
     gdImagePtr ip = NULL;
 
-    pFrameRGB = avcodec_alloc_frame();
+    pFrameRGB = av_frame_alloc();
     if (pFrameRGB == NULL) {
         av_log(NULL, AV_LOG_ERROR, "  couldn't allocate a video frame\n");
         goto cleanup;
@@ -828,7 +837,7 @@ void save_AVFrame(AVFrame *pFrame, int src_width, int src_height, int pix_fmt,
         goto cleanup;
     }
 
-    sws_scale(pSwsCtx, pFrame->data, pFrame->linesize, 0, src_height, 
+    sws_scale(pSwsCtx, (const uint8_t * const *)pFrame->data, pFrame->linesize, 0, src_height, 
         pFrameRGB->data, pFrameRGB->linesize);
     ip = gdImageCreateTrueColor(dst_width, dst_height);
     if (NULL == ip) {
@@ -931,7 +940,7 @@ void calc_scale_src(int width, int height, AVRational ratio, int *scaled_w, int 
 /*
 modified from libavformat's dump_format
 */
-void get_stream_info_type(AVFormatContext *ic, enum CodecType type, char *buf, AVRational sample_aspect_ratio)
+void get_stream_info_type(AVFormatContext *ic, enum AVMediaType type, char *buf, AVRational sample_aspect_ratio)
 {
     char sub_buf[1024] = ""; // FIXME
     unsigned int i;
@@ -939,14 +948,15 @@ void get_stream_info_type(AVFormatContext *ic, enum CodecType type, char *buf, A
         char codec_buf[256];
         int flags = ic->iformat->flags;
         AVStream *st = ic->streams[i];
+        AVDictionaryEntry *language = av_dict_get(ic->metadata, "language", NULL, 0);
 
         if (type != st->codec->codec_type) {
             continue;
         }
 
-        if (CODEC_TYPE_SUBTITLE == st->codec->codec_type) {
-            if (strlen(st->language) > 0) {
-                sprintf(sub_buf + strlen(sub_buf), "%s ", st->language);
+        if (AVMEDIA_TYPE_SUBTITLE == st->codec->codec_type) {
+            if (language != NULL) {
+                sprintf(sub_buf + strlen(sub_buf), "%s ", language->value);
             } else {
                 // FIXME: ignore for now; language seem to be missing in .vob files
                 //sprintf(sub_buf + strlen(sub_buf), "? ");
@@ -967,15 +977,17 @@ void get_stream_info_type(AVFormatContext *ic, enum CodecType type, char *buf, A
         }
 
         avcodec_string(codec_buf, sizeof(codec_buf), st->codec, 0);
-        // remove [PAR DAR] from string, it's not very useful.
+/* re-enable SAR & DAR
+        // remove [SAR DAR] from string, it's not very useful.
         char *begin = NULL, *end = NULL;
-        if ((begin=strstr(codec_buf, " [PAR")) != NULL 
+        if ((begin=strstr(codec_buf, " [SAR")) != NULL 
             && (end=strchr(begin, ']')) != NULL) {
             while (*++end != '\0') {
                 *begin++ = *end;
             }
             *begin = '\0';
         }
+*/
         sprintf(buf + strlen(buf), codec_buf);
 
         if (st->codec->codec_type == CODEC_TYPE_VIDEO){
@@ -994,8 +1006,8 @@ void get_stream_info_type(AVFormatContext *ic, enum CodecType type, char *buf, A
                 sprintf(buf + strlen(buf), " => %dx%d", scaled_src_width, scaled_src_height);
             }
         }
-        if (strlen(st->language) > 0) {
-            sprintf(buf + strlen(buf), " (%s)", st->language);
+        if (language != NULL) {
+            sprintf(buf + strlen(buf), " (%s)", language->value);
         }
         sprintf(buf + strlen(buf), NEWLINE);
     }
@@ -1020,7 +1032,7 @@ char *get_stream_info(AVFormatContext *ic, char *url, int strip_path, AVRational
 
     sprintf(buf, "File: %s", file_name);
     //sprintf(buf + strlen(buf), " (%s)", ic->iformat->name);
-    sprintf(buf + strlen(buf), "%sSize: %"PRId64" bytes (%s)", NEWLINE, ic->file_size, format_size(ic->file_size, "B"));
+    sprintf(buf + strlen(buf), "%sSize: %"PRId64" bytes (%s)", NEWLINE, avio_size(ic->pb), format_size(avio_size(ic->pb), "B"));
     if (ic->duration != AV_NOPTS_VALUE) { // FIXME: gcc warning: comparison between signed and unsigned
         int hours, mins, secs;
         duration = secs = ic->duration / AV_TIME_BASE;
@@ -1045,20 +1057,22 @@ char *get_stream_info(AVFormatContext *ic, char *url, int strip_path, AVRational
     // calculate from duration.
     // is this ok? probably not ok with .vob files when duration is wrong. DEBUG
     if (duration > 0) {
-        sprintf(buf + strlen(buf), ", avg.bitrate: %.0f kb/s%s", (double) ic->file_size * 8 / duration / 1000, NEWLINE);
+        sprintf(buf + strlen(buf), ", avg.bitrate: %.0f kb/s%s", (double) avio_size(ic->pb) * 8 / duration / 1000, NEWLINE);
     } else if (ic->bit_rate) {
         sprintf(buf + strlen(buf), ", bitrate: %d kb/s%s", ic->bit_rate / 1000, NEWLINE);
     } else {
         sprintf(buf + strlen(buf), ", bitrate: N/A%s", NEWLINE);
     }
 
-    get_stream_info_type(ic, CODEC_TYPE_AUDIO, buf, sample_aspect_ratio);
-    get_stream_info_type(ic, CODEC_TYPE_VIDEO, buf, sample_aspect_ratio);
-    get_stream_info_type(ic, CODEC_TYPE_SUBTITLE, buf, sample_aspect_ratio);
+    if (!gb_m_brief_media_info) {
+      get_stream_info_type(ic, AVMEDIA_TYPE_AUDIO, buf, sample_aspect_ratio);
+      get_stream_info_type(ic, AVMEDIA_TYPE_VIDEO, buf, sample_aspect_ratio);
+    }
+    get_stream_info_type(ic, AVMEDIA_TYPE_SUBTITLE, buf, sample_aspect_ratio);
     // CODEC_TYPE_DATA FIXME: what is this type?
     // CODEC_TYPE_NB FIXME: what is this type?
 
-    //strfmon(buf + strlen(buf), 100, "strfmon: %!i\n", ic->file_size);
+    //strfmon(buf + strlen(buf), 100, "strfmon: %!i\n", avio_size(ic->pb));
     return buf;
 }
 
@@ -1073,25 +1087,35 @@ void dump_format_context(AVFormatContext *p, int __attribute__((unused)) index, 
     av_log(NULL, LOG_INFO, get_stream_info(p, url, 0, GB_A_RATIO)); 
 
     av_log(NULL, AV_LOG_VERBOSE, "start_time av: %"PRId64", duration av: %"PRId64", file_size: %"PRId64"\n",
-        p->start_time, p->duration, p->file_size);
+        p->start_time, p->duration, avio_size(p->pb));
     av_log(NULL, AV_LOG_VERBOSE, "start_time s: %.2f, duration s: %.2f\n",
         (double) p->start_time / AV_TIME_BASE, (double) p->duration / AV_TIME_BASE);
-    if (p->track != 0)
-        av_log(NULL, LOG_INFO, "  Track: %d\n", p->track);
-    if (p->title[0] != '\0')
-        av_log(NULL, LOG_INFO, "  Title: %s\n", p->title);
-    if (p->author[0] != '\0')
-        av_log(NULL, LOG_INFO, "  Author: %s\n", p->author);
-    if (p->copyright[0] != '\0')
-        av_log(NULL, LOG_INFO, "  Copyright: %s\n", p->copyright);
-    if (p->comment[0] != '\0')
-        av_log(NULL, LOG_INFO, "  Comment: %s\n", p->comment);
-    if (p->album[0] != '\0')
-        av_log(NULL, LOG_INFO, "  Album: %s\n", p->album);
-    if (p->year != 0)
-        av_log(NULL, LOG_INFO, "  Year: %d\n", p->year);
-    if (p->genre[0] != '\0')
-        av_log(NULL, LOG_INFO, "  Genre: %s\n", p->genre);
+
+    AVDictionaryEntry* track = av_dict_get(p->metadata, "track", NULL, 0);
+    AVDictionaryEntry* title = av_dict_get(p->metadata, "title", NULL, 0);
+    AVDictionaryEntry* author = av_dict_get(p->metadata, "author", NULL, 0);
+    AVDictionaryEntry* copyright = av_dict_get(p->metadata, "copyright", NULL, 0);
+    AVDictionaryEntry* comment = av_dict_get(p->metadata, "comment", NULL, 0);
+    AVDictionaryEntry* album = av_dict_get(p->metadata, "album", NULL, 0);
+    AVDictionaryEntry* year = av_dict_get(p->metadata, "year", NULL, 0);
+    AVDictionaryEntry* genre = av_dict_get(p->metadata, "genre", NULL, 0);
+
+    if (track != NULL)
+        av_log(NULL, LOG_INFO, "  Track: %s\n", track->value);
+    if (title != NULL)
+        av_log(NULL, LOG_INFO, "  Title: %s\n", title->value);
+    if (author != NULL)
+        av_log(NULL, LOG_INFO, "  Author: %s\n", author->value);
+    if (copyright != NULL)
+        av_log(NULL, LOG_INFO, "  Copyright: %s\n", copyright->value);
+    if (comment != NULL)
+        av_log(NULL, LOG_INFO, "  Comment: %s\n", comment->value);
+    if (album != NULL)
+        av_log(NULL, LOG_INFO, "  Album: %s\n", album->value);
+    if (year != NULL)
+        av_log(NULL, LOG_INFO, "  Year: %s\n", year->value);
+    if (genre != NULL)
+        av_log(NULL, LOG_INFO, "  Genre: %s\n", genre->value);
 }
 
 /*
@@ -1182,12 +1206,12 @@ int read_and_decode(AVFormatContext *pFormatCtx, int video_index,
     // keep decoding until we get a key frame
     for (got_picture = 0; 0 == got_picture 
         //|| (1 == key_only && !(1 == pFrame->key_frame && FF_I_TYPE == pFrame->pict_type)); // same as version 0.61
-        || (1 == key_only && !(1 == pFrame->key_frame || FF_I_TYPE == pFrame->pict_type)); // same as version 2.42
+        || (1 == key_only && !(1 == pFrame->key_frame || AV_PICTURE_TYPE_I == pFrame->pict_type)); // same as version 2.42
         //|| (1 == key_only && 1 != pFrame->key_frame); // is there a reason why not use this? t_warhawk_review_gt_h264.mov (svq3) seems to set only pict_type
         av_free_packet(&packet)) {
 
         if (0 != av_read_frame(pFormatCtx, &packet)) {
-            if (url_ferror(pFormatCtx->pb) != 0) { // from ffplay - not documented
+            if (pFormatCtx->pb->error) {
                 return -1;
             }
             return 0;
@@ -1203,7 +1227,7 @@ int read_and_decode(AVFormatContext *pFormatCtx, int video_index,
         // so we'll use it only when a key frame is difficult to find.
         // hope this wont break anything. :)
         // this seems to help a lot for files with vorbis audio
-        if (1 == skip_non_key && 1 == key_only && !(packet.flags & PKT_FLAG_KEY)) {
+        if (1 == skip_non_key && 1 == key_only && !(packet.flags & AV_PKT_FLAG_KEY)) {
             continue;
         }
         
@@ -1215,9 +1239,9 @@ int read_and_decode(AVFormatContext *pFormatCtx, int video_index,
         gb_video_pkt_pts = packet.pts;
 
         // Decode video frame
-        avcodec_decode_video(pCodecCtx, pFrame, &got_picture, packet.data, packet.size);
+        avcodec_decode_video2(pCodecCtx, pFrame, &got_picture, &packet);
         // error is ignored. perhaps packets read are not enough.
-        av_log(NULL, AV_LOG_VERBOSE, "*avcodec_decode_video: got_picture: %d, key_frame: %d, pict_type: %d\n", got_picture, pFrame->key_frame, pFrame->pict_type);
+        av_log(NULL, AV_LOG_VERBOSE, "*avcodec_decode_video2: got_picture: %d, key_frame: %d, pict_type: %d\n", got_picture, pFrame->key_frame, pFrame->pict_type);
 
         // FIXME: with some .dat files, got_picture is never set, why??
 
@@ -1227,7 +1251,7 @@ int read_and_decode(AVFormatContext *pFormatCtx, int video_index,
                 av_log(NULL, LOG_INFO, "  no picture in %d packets\n", pkt_without_pic);
             }
             if (1000 == pkt_without_pic) { // is 1000 enough? // FIXME
-                av_log(NULL, AV_LOG_ERROR, "  * avcodec_decode_video couldn't decode picture\n");
+                av_log(NULL, AV_LOG_ERROR, "  * avcodec_decode_video2 couldn't decode picture\n");
                 av_free_packet(&packet);
                 return -1;
             }
@@ -1321,8 +1345,8 @@ double guess_duration(AVFormatContext *pFormatCtx, int index,
     // pFormatCtx->start_time would be incorrect for .vob file with multiple titles.
     // pStream->start_time doesn't work either. so we'll need to disable timestamping.
     assert(NULL != pStream && NULL != pStream->codec);
-    if (pStream->codec->bit_rate > 0 && pFormatCtx->file_size > 0) {
-        guess = 0.9 * pFormatCtx->file_size / (pStream->codec->bit_rate / 8);
+    if (pStream->codec->bit_rate > 0 && avio_size(pFormatCtx->pb) > 0) {
+        guess = 0.9 * avio_size(pFormatCtx->pb) / (pStream->codec->bit_rate / 8);
         if (guess > 0) {
             av_log(NULL, AV_LOG_ERROR, "  ** duration is unknown: %.2f; guessing: %.2f s from bit_rate\n", duration, guess);
             return guess;
@@ -1409,12 +1433,12 @@ int really_seek(AVFormatContext *pFormatCtx, int index, int64_t timestamp, int f
     // normally when seeking by timestamp we add start_time to timestamp 
     // before seeking, but seeking by byte we need to subtract the added start_time
     timestamp -= start_time / av_q2d(pStream->time_base);
-    if (pFormatCtx->file_size <= 0) {
+    if (avio_size(pFormatCtx->pb) <= 0) {
         return -1;
     }
     if (duration > 0) {
-        int64_t byte_pos = av_rescale(timestamp, pFormatCtx->file_size, duration_tb);
-        av_log(NULL, LOG_INFO, "AVSEEK_FLAG_BYTE: byte_pos: %"PRId64", timestamp: %"PRId64", file_size: %"PRId64", duration_tb: %"PRId64"\n", byte_pos, timestamp, pFormatCtx->file_size, duration_tb);
+        int64_t byte_pos = av_rescale(timestamp, avio_size(pFormatCtx->pb), duration_tb);
+        av_log(NULL, LOG_INFO, "AVSEEK_FLAG_BYTE: byte_pos: %"PRId64", timestamp: %"PRId64", file_size: %"PRId64", duration_tb: %"PRId64"\n", byte_pos, timestamp, avio_size(pFormatCtx->pb), duration_tb);
         return av_seek_frame(pFormatCtx, index, byte_pos, AVSEEK_FLAG_BYTE);
     }
 
@@ -1472,6 +1496,7 @@ void make_thumbnail(char *file)
     /* these are checked during cleaning up, must be NULL if not used */
     AVFormatContext *pFormatCtx = NULL;
     AVCodecContext *pCodecCtx = NULL;
+    AVDictionary *pDict = NULL;
     AVFrame *pFrame = NULL;
     AVFrame *pFrameRGB = NULL;
     uint8_t *rgb_buffer = NULL;
@@ -1497,11 +1522,18 @@ void make_thumbnail(char *file)
             strcpy(tn.info_filename, file);
     }
     char *suffix = strrchr(tn.out_filename, '.');
-    if (NULL == suffix) {
-        strcat(tn.out_filename, gb_o_suffix);
+
+    if (gb_filename_use_full) {
+      strcat(tn.out_filename, gb_o_suffix);
+      strcat(tn.info_filename, gb_o_suffix);
     } else {
-        strcpy(suffix, gb_o_suffix);
+      if (NULL == suffix) {
+          strcat(tn.out_filename, gb_o_suffix);
+      } else {
+          strcpy(suffix, gb_o_suffix);
+      }
     }
+
     if (NULL != gb_N_suffix) {
         suffix = strrchr(tn.info_filename, '.');
         if (NULL == suffix) {
@@ -1554,9 +1586,9 @@ void make_thumbnail(char *file)
     }
 
     // Open video file
-    ret = av_open_input_file(&pFormatCtx, file, NULL, 0, NULL);
+    ret = avformat_open_input(&pFormatCtx, file, NULL, NULL);
     if (0 != ret) {
-        av_log(NULL, AV_LOG_ERROR, "\n%s: av_open_input_file %s failed: %d\n", gb_argv0, file, ret);
+        av_log(NULL, AV_LOG_ERROR, "\n%s: avformat_open_input %s failed: %d\n", gb_argv0, file, ret);
         goto cleanup;
     }
 
@@ -1566,9 +1598,9 @@ void make_thumbnail(char *file)
     pFormatCtx->flags |= AVFMT_FLAG_GENPTS;
 
     // Retrieve stream information
-    ret = av_find_stream_info(pFormatCtx);
+    ret = avformat_find_stream_info(pFormatCtx, NULL);
     if (ret < 0) {
-        av_log(NULL, AV_LOG_ERROR, "\n%s: av_find_stream_info %s failed: %d\n", gb_argv0, file, ret);
+        av_log(NULL, AV_LOG_ERROR, "\n%s: avformat_find_stream_info %s failed: %d\n", gb_argv0, file, ret);
         goto cleanup;
     }
     dump_format_context(pFormatCtx, nb_file, file, 0);
@@ -1576,10 +1608,18 @@ void make_thumbnail(char *file)
     // Find the first video stream
     // int av_find_default_stream_index(AVFormatContext *s)
     int video_index = -1;
+    int n_video_stream = 0;
     for (i = 0; i < pFormatCtx->nb_streams; i++) {
-        if (CODEC_TYPE_VIDEO == pFormatCtx->streams[i]->codec->codec_type) {
+        if (AVMEDIA_TYPE_VIDEO == pFormatCtx->streams[i]->codec->codec_type) {
+          if (!gb_S_select_video_stream) {
             video_index = i;
             break;
+          } else {
+            if (++n_video_stream == gb_S_select_video_stream) {
+              video_index = i;
+              break;
+            }
+          }
         }
     }
     if (video_index == -1) {
@@ -1611,7 +1651,7 @@ void make_thumbnail(char *file)
     }
 
     // Open codec
-    ret = avcodec_open(pCodecCtx, pCodec);
+    ret = avcodec_open2(pCodecCtx, pCodec, &pDict);
     if (ret < 0) {
         av_log(NULL, AV_LOG_ERROR, "  couldn't open codec %s id %d: %d\n", pCodec->name, pCodec->id, ret);
         goto cleanup;
@@ -1620,7 +1660,7 @@ void make_thumbnail(char *file)
     pCodecCtx->release_buffer = our_release_buffer;
 
     // Allocate video frame
-    pFrame = avcodec_alloc_frame();
+    pFrame = av_frame_alloc();
     if (pFrame == NULL) {
         av_log(NULL, AV_LOG_ERROR, "  couldn't allocate a video frame\n");
         goto cleanup;
@@ -1807,7 +1847,7 @@ void make_thumbnail(char *file)
     }
 
     /* prepare for resize & conversion to PIX_FMT_RGB24 */
-    pFrameRGB = avcodec_alloc_frame();
+    pFrameRGB = av_frame_alloc();
     if (pFrameRGB == NULL) {
         av_log(NULL, AV_LOG_ERROR, "  couldn't allocate a video frame\n");
         goto cleanup;
@@ -1847,6 +1887,10 @@ void make_thumbnail(char *file)
         }
     }
 
+    if (gb_S_select_video_stream > 0) {
+      av_log(NULL, LOG_INFO, "Selecting video stream (-S): %d\n", gb_S_select_video_stream);
+    }
+
     /* alloc dynamic thumb data */
     if (-1 == thumb_alloc_dynamic(&tn)) {
         av_log(NULL, AV_LOG_ERROR, "  thumb_alloc_dynamic failed\n");
@@ -1861,9 +1905,8 @@ void make_thumbnail(char *file)
         av_log(NULL, LOG_INFO, "  *** using non-seek mode -- slower but more accurate timing.\n");
     }
 
+  restart: ;
     /* decode & fill in the shots */
-  restart:
-    seek_mode = seek_mode; // target for restart
     if (0 == seek_mode && gb_B_begin > 10) {
         av_log(NULL, LOG_INFO, "  -B %.2f with non-seek mode will take some time.\n", gb_B_begin);
     }
@@ -1888,6 +1931,14 @@ void make_thumbnail(char *file)
 
         /* for some formats, previous seek might over shoot pass this seek_target; is this a bug in libavcodec? */
         if (prevshot_pts > eff_target && 0 == evade_try) {
+            // restart in seek mode of skipping shots (FIXME)
+            if (seek_mode == 1) {
+              av_log(NULL, LOG_INFO, "  *** previous seek overshot target %s; switching to non-seek mode\n", time_tmp);
+              av_seek_frame(pFormatCtx, video_index, 0, 0);
+              avcodec_flush_buffers(pCodecCtx);
+              seek_mode = 0;
+              goto restart;
+            }
             av_log(NULL, LOG_INFO, "  skipping shot at %s because of previous seek or evasions\n", time_tmp);
             idx--;
             thumb_nb--;
@@ -2013,7 +2064,7 @@ void make_thumbnail(char *file)
         }
 
         /* convert to PIX_FMT_RGB24 & resize */
-        sws_scale(pSwsCtx, pFrame->data, pFrame->linesize, 0, pCodecCtx->height, 
+        sws_scale(pSwsCtx, (const uint8_t * const*)pFrame->data, pFrame->linesize, 0, pCodecCtx->height, 
             pFrameRGB->data, pFrameRGB->linesize);
         /*
         sprintf(debug_filename, "%s_resized%05d.jpg", tn.out_filename, nb_shots - 1); // DEBUG
@@ -2133,9 +2184,7 @@ void make_thumbnail(char *file)
     }
     av_log(NULL, AV_LOG_VERBOSE, "  *** avg_evade_try: %.2f\n", avg_evade_try); // DEBUG
 
-  eof:
-    idx = idx; // target for eof:
-
+  eof: ;
     /* crop if we dont get enough shots */
     int skipped_rows = tn.row - ceil((double)idx / tn.column);
     if (skipped_rows == tn.row) {
@@ -2200,6 +2249,8 @@ void make_thumbnail(char *file)
     if (NULL != pFrame)
         av_free(pFrame);
 
+    av_dict_free(&pDict);
+ 
     // Close the codec
     if (NULL != pCodecCtx && NULL != pCodecCtx->codec) {
         avcodec_close(pCodecCtx);
@@ -2207,7 +2258,7 @@ void make_thumbnail(char *file)
 
     // Close the video file
     if (NULL != pFormatCtx)
-        av_close_input_file(pFormatCtx);
+        avformat_close_input(&pFormatCtx);
 
     thumb_cleanup_dynamic(&tn);
     
@@ -2216,11 +2267,15 @@ void make_thumbnail(char *file)
 
 /* modified from glibc
 */
-int alphasort(const void *a, const void *b)
+/*int alphasort(const void *a, const void *b)
 {
     return strcoll(*(const char **) a, *(const char **) b);
     //return strcasecmp(*(const char **) a, *(const char **) b);
-}
+}*/
+/*int alphasort(const struct dirent **a, const struct dirent **b)
+{
+	return strcmp((*a)->d_name, (*b)->d_name);
+}*/
 
 /* modified from glibc
 */
@@ -2239,7 +2294,7 @@ int check_extension(char *filename)
         "3gp", "3g2", "asf", "avi", "avs", "dat", "divx", "dsm", "evo", "flv", 
         "m1v", "m2ts", "m2v", "m4a", "mj2", "mjpg", "mjpeg", "mkv", "mov", 
         "moov", "mp4", "mpg", "mpeg", "mpv", "nut", "ogg", "ogm", "qt", "rm", 
-        "rmvb", "swf", "ts", "vob", "wmv", "xvid"
+        "rmvb", "swf", "ts", "vob", "webm", "wmv", "xvid"
     }; // FIXME: static
     static int sorted = 0; // 1 = sorted
 
@@ -2350,7 +2405,6 @@ void process_dir(char *dir)
     free(v);
     _tclosedir(dp);
 }
-
 /*
 */
 void process_loop(int n, char **files)
@@ -2362,7 +2416,12 @@ void process_loop(int n, char **files)
 
         if (is_dir(files[i])) { // directory
             //av_log(NULL, LOG_INFO, "process_loop: %s is a DIR\n", files[i]); // DEBUG
-            process_dir(files[i]);
+            if (gb_d_depth <= 0) { // no depth limit
+              process_dir(files[i]);
+            } else if (gb_current_depth < gb_d_depth) {
+              gb_current_depth++;
+              process_dir(files[i]);
+            }
         } else { // not a directory
             //av_log(NULL, LOG_INFO, "process_loop: %s is not a DIR\n", files[i]); // DEBUG
             make_thumbnail(files[i]);
@@ -2639,7 +2698,7 @@ void usage()
     av_log(NULL, AV_LOG_ERROR, "  -B %.1f : omit this seconds from the beginning\n", GB_B_BEGIN);
     av_log(NULL, AV_LOG_ERROR, "  -c %d : # of column\n", GB_C_COLUMN);
     av_log(NULL, AV_LOG_ERROR, "  -C %d : cut movie and thumbnails not more than the specified seconds; <=0:off\n", GB_C_CUT);
-    //av_log(NULL, AV_LOG_ERROR, "  -d : this option shouldn't be needed anymore\n");
+    av_log(NULL, AV_LOG_ERROR, "  -d %d: recursion depth; 0:unlimited\n", GB_D_DEPTH);
     av_log(NULL, AV_LOG_ERROR, "  -D %d : edge detection; 0:off >0:on; higher detects more; try -D4 -D6 or -D8\n", gb_D_edge);
     //av_log(NULL, AV_LOG_ERROR, "  -e : to be done\n"); // extension of movie files
     av_log(NULL, AV_LOG_ERROR, "  -E %.1f : omit this seconds at the end\n", GB_E_END);
@@ -2661,11 +2720,13 @@ void usage()
     //av_log(NULL, AV_LOG_ERROR, "  -q : to be done\n"); // quiet mode
     av_log(NULL, AV_LOG_ERROR, "  -r %d : # of rows; >0:override -s\n", GB_R_ROW);
     av_log(NULL, AV_LOG_ERROR, "  -s %d : time step between each shot\n", GB_S_STEP);
+    av_log(NULL, AV_LOG_ERROR, "  -S #: select specific stream number");
     av_log(NULL, AV_LOG_ERROR, "  -t : time stamp off\n");
     av_log(NULL, AV_LOG_ERROR, "  -T text : add text above output image\n");
     av_log(NULL, AV_LOG_ERROR, "  -v : verbose mode (debug)\n");
     av_log(NULL, AV_LOG_ERROR, "  -w %d : width of output image; 0:column * movie width\n", GB_W_WIDTH);
     av_log(NULL, AV_LOG_ERROR, "  -W : dont overwrite existing files, i.e. update mode\n");
+    av_log(NULL, AV_LOG_ERROR, "  -X : use full input filename (include extension)\n");
     av_log(NULL, AV_LOG_ERROR, "  -z : always use seek mode\n");
     av_log(NULL, AV_LOG_ERROR, "  -Z : always use non-seek mode -- slower but more accurate timing\n");
     av_log(NULL, AV_LOG_ERROR, "examples:\n");
@@ -2714,7 +2775,7 @@ int main(int argc, char *argv[])
     /* get & check options */
     int parse_error = 0;
     int c;
-    while (-1 != (c = getopt(argc, argv, "a:b:B:c:C:D:e:E:f:F:g:h:iIj:k:L:nN:o:O:pPqr:s:tT:vVw:WzZ"))) {
+    while (-1 != (c = getopt(argc, argv, "a:b:B:c:C:d:D:e:E:f:F:g:h:iIj:k:L:nN:o:O:pPqr:s:S:tT:vVw:WXzZ"))) {
         switch (c) {
         double tmp_a_ratio = 0;
         case 'a':
@@ -2743,6 +2804,9 @@ int main(int argc, char *argv[])
             break;
         case 'C':
             parse_error += get_double_opt('C', &gb_C_cut, optarg, 1);
+            break;
+        case 'd':
+            parse_error += get_int_opt('d', &gb_d_depth, optarg, 0);
             break;
         case 'D':
             parse_error += get_int_opt('D', &gb_D_edge, optarg, 0);
@@ -2787,6 +2851,9 @@ int main(int argc, char *argv[])
         case 'L':
             parse_error += get_location_opt('L', optarg);
             break;
+        case 'm':
+            gb_m_brief_media_info = 1;
+            break;
         case 'n':
             gb_n_normal = 1; // normal priority
             break;
@@ -2815,6 +2882,9 @@ int main(int argc, char *argv[])
         case 's':
             parse_error += get_int_opt('s', &gb_s_step, optarg, 0);
             break;
+        case 'S':
+            parse_error += get_int_opt('S', &gb_S_select_video_stream, optarg, 0);
+            break;
         case 't':
             gb_t_timestamp = 0; // off
             break;
@@ -2833,6 +2903,9 @@ int main(int argc, char *argv[])
             break;
         case 'W':
             gb_W_overwrite = 0;
+            break;
+        case 'X':
+            gb_filename_use_full = 1;
             break;
         case 'z':
             gb_z_seek = 1; // always seek mode
@@ -2907,6 +2980,7 @@ int main(int argc, char *argv[])
     //gdUseFontConfig(1); // set GD to use fontconfig patterns
 
     /* process movie files */
+    gb_current_depth = 0;
     process_loop(argc - optind, argv + optind);
 
   exit:
