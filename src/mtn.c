@@ -990,9 +990,9 @@ void get_stream_info_type(AVFormatContext *ic, enum AVMediaType type, char *buf,
 */
         sprintf(buf + strlen(buf), codec_buf);
 
-        if (st->codec->codec_type == CODEC_TYPE_VIDEO){
-            if (st->r_frame_rate.den && st->r_frame_rate.num)
-                sprintf(buf + strlen(buf), ", %5.2f fps(r)", av_q2d(st->r_frame_rate));
+        if (st->codec->codec_type == AVMEDIA_TYPE_VIDEO){
+            if (st->avg_frame_rate.den && st->avg_frame_rate.num)
+                sprintf(buf + strlen(buf), ", %5.2f fps(r)", av_q2d(st->avg_frame_rate));
             //else if(st->time_base.den && st->time_base.num)
             //  sprintf(buf + strlen(buf), ", %5.2f fps(m)", 1/av_q2d(st->time_base));
             else
