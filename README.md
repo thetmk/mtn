@@ -4,7 +4,7 @@ movie thumbnailer (mtn)
 movie thumbnailer (mtn) -- saves thumbnails (screenshots) of movie or video files to jpeg files. It uses FFmpeg's libavcodec as its engine, so it supports all popular codecs, e.g. divx h264 h265 mpeg1 mpeg2 mp4 vc1 wmv xvid, and formats, e.g. .3gp .avi .dat .mkv .wmv. mtn is open source software.
 
 The latest release of the original developer is from 2008 and was built using a now very outdated ffmpeg version which lacks support for high resolutions like 4K and popular codecs like HEVC/h265.
-This fork has a few community patches and has been made to support FFmpeg up to FFmpeg/FFmpeg@c457bdebe7af643b380aa0f6add3cb4335d218dc. That is the latest version that still has the deprecated get_buffer API.
+This fork has a few community patches and has been made to support FFmpeg up to [FFmpeg/FFmpeg](https://github.com/FFmpeg/FFmpeg/)[@c457bdebe7af643b380aa0f6add3cb4335d218dc](https://github.com/FFmpeg/FFmpeg/commit/c457bdebe7af643b380aa0f6add3cb4335d218dc). That is the latest version that still has the deprecated get_buffer API.
 
 Original project: http://moviethumbnail.sourceforge.net/
 
