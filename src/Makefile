@@ -16,7 +16,4 @@ clean:
 
 # docker build --target build -t mtn:ffmpeg . -f Dockerfile.ffmpeg
 # docker build -t mtn:build -l mtnbuild . -f Dockerfile
-#   > make
-# While it's still running:
-# docker cp mtnbuild:/tmp/mtn/mtn mtn
-# docker cp mtnbuild:/tmp/mtn/mtns mtns
+# docker run --rm -v $(pwd)/src:/tmp/mtn mtn:build -c make

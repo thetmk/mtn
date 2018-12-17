@@ -21,19 +21,9 @@ docker build --target build -t mtn:ffmpeg . -f Dockerfile.ffmpeg
 docker build -t mtn:build . -f Dockerfile
 ```
 
-#### Start a build container instance
+#### Start building..
 ```
-docker run -it --rm --name mtnbuild mtn:build
+docker run --rm -it -v $(pwd)/src:/tmp/mtn mtn:build -c 'make clean'
+docker run --rm -it -v $(pwd)/src:/tmp/mtn mtn:build -c 'make all'
 ```
-
-#### Inside the container you can just run make
-```
-make
-```
-
-#### While the container is still running (will be remove once you exit out of it!), copy the binaries to the host
-```
-docker cp mtnbuild:/tmp/mtn/mtn mtn
-docker cp mtnbuild:/tmp/mtn/mtns mtns
-```
-(mtn = dynamically linked, mtns = statically linked)
+(mtn = dynamically linked binary, mtns = statically linked binary)
